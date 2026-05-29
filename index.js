@@ -371,14 +371,113 @@ class TwentyCRMServer {
               type: "object",
               properties: {
                 query: { type: "string", description: "Search query" },
-                objectTypes: { 
-                  type: "array", 
+                objectTypes: {
+                  type: "array",
                   items: { type: "string" },
-                  description: "Object types to search (e.g., ['people', 'companies'])" 
+                  description: "Object types to search (e.g., ['people', 'companies'])"
                 },
                 limit: { type: "number", description: "Number of results per object type" }
               },
               required: ["query"]
+            }
+          },
+
+          // PhoneCall Management (OCP fork — custom object)
+          {
+            name: "create_phone_call",
+            description: "Create a PhoneCall record (custom object) in Twenty CRM. Used to log an inbound call with its transcript. ALWAYS populate twilioCallSid — it is the correlation key the upstream pipeline uses to verify the write succeeded.",
+            inputSchema: {
+              type: "object",
+              properties: {
+                twilioCallSid: { type: "string", description: "Twilio Call SID — REQUIRED correlation key, must be unique per call" },
+                transcript: { type: "string", description: "Full call transcript text" },
+                transcriptUrl: { type: "string", description: "URL to the AssemblyAI transcript" },
+                recordingUrl: { type: "string", description: "URL to the Twilio audio recording" },
+                assemblyaiTranscriptId: { type: "string", description: "AssemblyAI transcript ID" },
+                fromNumber: { type: "string", description: "Caller's E.164 phone number" },
+                toNumber: { type: "string", description: "E.164 number called (the Twilio inbound)" },
+                fromCallerName: { type: "string", description: "Twilio CNAM lookup result" },
+                direction: { type: "string", description: "Call direction", enum: ["inbound", "outbound"] },
+                outcome: { type: "string", description: "How the call ended", enum: ["completed", "voicemail", "missed", "fallback_retell", "failover_static"] },
+                startedAt: { type: "string", description: "Call start (ISO 8601 UTC)" },
+                answeredAt: { type: "string", description: "When a leg answered (ISO 8601 UTC)" },
+                endedAt: { type: "string", description: "Call end (ISO 8601 UTC)" },
+                durationSeconds: { type: "number", description: "Total call duration in seconds" },
+                answeredBy: { type: "string", description: "Who answered: 'agent_1', 'agent_2', 'retell_ai', etc." },
+                fallbackChain: { type: "string", description: "JSON array of routing events as a string" },
+                language: { type: "string", description: "Language code, e.g. 'en_au'" },
+                confidence: { type: "number", description: "AssemblyAI overall confidence (0–1)" },
+                personId: { type: "string", description: "ID of the linked Person (the caller)" }
+              },
+              required: ["twilioCallSid"]
+            }
+          },
+          {
+            name: "get_phone_call",
+            description: "Get a PhoneCall record by ID",
+            inputSchema: {
+              type: "object",
+              properties: { id: { type: "string", description: "PhoneCall ID" } },
+              required: ["id"]
+            }
+          },
+          {
+            name: "list_phone_calls",
+            description: "List PhoneCall records with optional filter and pagination",
+            inputSchema: {
+              type: "object",
+              properties: {
+                limit: { type: "number", description: "Page size (default 20)" },
+                offset: { type: "number", description: "Skip count (default 0)" },
+                filter: { type: "string", description: "Twenty REST filter expression, e.g. 'twilioCallSid[eq]:CAxxxxx' or 'personId[eq]:<uuid>'" }
+              }
+            }
+          },
+          {
+            name: "find_phone_call_by_call_sid",
+            description: "Find an existing PhoneCall by twilioCallSid. Returns the record or a 'not found' message. Call this BEFORE create_phone_call when processing a retry, to avoid creating a duplicate record.",
+            inputSchema: {
+              type: "object",
+              properties: { twilioCallSid: { type: "string", description: "Twilio Call SID to search for" } },
+              required: ["twilioCallSid"]
+            }
+          },
+          {
+            name: "update_phone_call",
+            description: "Update fields on an existing PhoneCall (e.g., to backfill a missing field, link a Person after reconciliation, or correct a value)",
+            inputSchema: {
+              type: "object",
+              properties: {
+                id: { type: "string", description: "PhoneCall ID" },
+                transcript: { type: "string" },
+                transcriptUrl: { type: "string" },
+                recordingUrl: { type: "string" },
+                assemblyaiTranscriptId: { type: "string" },
+                fromNumber: { type: "string" },
+                toNumber: { type: "string" },
+                fromCallerName: { type: "string" },
+                direction: { type: "string", enum: ["inbound", "outbound"] },
+                outcome: { type: "string", enum: ["completed", "voicemail", "missed", "fallback_retell", "failover_static"] },
+                startedAt: { type: "string" },
+                answeredAt: { type: "string" },
+                endedAt: { type: "string" },
+                durationSeconds: { type: "number" },
+                answeredBy: { type: "string" },
+                fallbackChain: { type: "string" },
+                language: { type: "string" },
+                confidence: { type: "number" },
+                personId: { type: "string" }
+              },
+              required: ["id"]
+            }
+          },
+          {
+            name: "delete_phone_call",
+            description: "Delete a PhoneCall record by ID",
+            inputSchema: {
+              type: "object",
+              properties: { id: { type: "string", description: "PhoneCall ID to delete" } },
+              required: ["id"]
             }
           }
         ]
@@ -447,6 +546,20 @@ class TwentyCRMServer {
           // Search operations
           case "search_records":
             return await this.searchRecords(args);
+
+          // PhoneCall operations (OCP fork — custom object)
+          case "create_phone_call":
+            return await this.createPhoneCall(args);
+          case "get_phone_call":
+            return await this.getPhoneCall(args.id);
+          case "list_phone_calls":
+            return await this.listPhoneCalls(args);
+          case "find_phone_call_by_call_sid":
+            return await this.findPhoneCallByCallSid(args.twilioCallSid);
+          case "update_phone_call":
+            return await this.updatePhoneCall(args);
+          case "delete_phone_call":
+            return await this.deletePhoneCall(args.id);
 
           default:
             throw new Error(`Unknown tool: ${name}`);
@@ -791,6 +904,79 @@ class TwentyCRMServer {
           type: "text",
           text: `Search results for "${query}": ${JSON.stringify(results, null, 2)}`
         }
+      ]
+    };
+  }
+
+  // PhoneCall methods (OCP fork — custom object)
+  async createPhoneCall(data) {
+    const result = await this.makeRequest("/rest/phoneCalls", "POST", data);
+    return {
+      content: [
+        { type: "text", text: `Created PhoneCall: ${JSON.stringify(result, null, 2)}` }
+      ]
+    };
+  }
+
+  async getPhoneCall(id) {
+    const result = await this.makeRequest(`/rest/phoneCalls/${id}`);
+    return {
+      content: [
+        { type: "text", text: `PhoneCall details: ${JSON.stringify(result, null, 2)}` }
+      ]
+    };
+  }
+
+  async listPhoneCalls(params = {}) {
+    const { limit = 20, offset = 0, filter } = params;
+    let endpoint = `/rest/phoneCalls?limit=${limit}&offset=${offset}`;
+    if (filter) {
+      endpoint += `&filter=${encodeURIComponent(filter)}`;
+    }
+    const result = await this.makeRequest(endpoint);
+    return {
+      content: [
+        { type: "text", text: `PhoneCalls list: ${JSON.stringify(result, null, 2)}` }
+      ]
+    };
+  }
+
+  async findPhoneCallByCallSid(twilioCallSid) {
+    const endpoint = `/rest/phoneCalls?filter=${encodeURIComponent(`twilioCallSid[eq]:${twilioCallSid}`)}&limit=1`;
+    const result = await this.makeRequest(endpoint);
+    // Twenty REST returns the collection under data.<objectPlural>; tolerate other shapes too.
+    const records =
+      result?.data?.phoneCalls ??
+      result?.phoneCalls ??
+      (Array.isArray(result?.data) ? result.data : null) ??
+      [];
+    return {
+      content: [
+        {
+          type: "text",
+          text: records.length === 0
+            ? `No PhoneCall found with twilioCallSid=${twilioCallSid}`
+            : `Found PhoneCall: ${JSON.stringify(records[0], null, 2)}`
+        }
+      ]
+    };
+  }
+
+  async updatePhoneCall(data) {
+    const { id, ...updateData } = data;
+    const result = await this.makeRequest(`/rest/phoneCalls/${id}`, "PUT", updateData);
+    return {
+      content: [
+        { type: "text", text: `Updated PhoneCall: ${JSON.stringify(result, null, 2)}` }
+      ]
+    };
+  }
+
+  async deletePhoneCall(id) {
+    await this.makeRequest(`/rest/phoneCalls/${id}`, "DELETE");
+    return {
+      content: [
+        { type: "text", text: `Successfully deleted PhoneCall with ID: ${id}` }
       ]
     };
   }

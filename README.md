@@ -17,6 +17,23 @@
 
 ---
 
+## OCP fork additions
+
+This is a fork of [`mhenry3164/twenty-crm-mcp-server`](https://github.com/mhenry3164/twenty-crm-mcp-server) (MIT) maintained for the OCP Phone2CRM project. It adds support for a custom `PhoneCall` object via these new MCP tools:
+
+- `create_phone_call` — create a PhoneCall record (transcript, recording URL, `twilioCallSid`, etc.)
+- `get_phone_call` — fetch by ID
+- `list_phone_calls` — list with optional filter (e.g. by `personId` or `twilioCallSid`)
+- `find_phone_call_by_call_sid` — convenience lookup used by Hermes to dedupe on retry
+- `update_phone_call` — backfill fields / link a Person after reconciliation
+- `delete_phone_call` — for completeness
+
+The PhoneCall schema lives in the parent monorepo at [`twenty/schema/phone-call-fields.json`](../../twenty/schema/phone-call-fields.json). Apply it once with the parent monorepo's [`twenty/scripts/apply-phone-call-schema.ts`](../../twenty/scripts/apply-phone-call-schema.ts) before using the PhoneCall tools.
+
+All other behaviour matches upstream. Upstream changes can be rebased in cleanly because the additions are appended to `index.js` rather than scattered through it.
+
+---
+
 ## ✨ Features
 
 <table>
