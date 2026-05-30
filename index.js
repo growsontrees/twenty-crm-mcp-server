@@ -7,12 +7,98 @@ import {
   ListToolsRequestSchema,
 } from "@modelcontextprotocol/sdk/types.js";
 
+// Twenty's PHONES composite field requires a calling code (+61) AND an ISO 3166-1
+// alpha-2 country code (AU). Passing the calling code as the country code is a
+// classic INVALID_PHONE_COUNTRY_CODE error. This table covers the codes most
+// commonly seen in our pipelines; extend as needed.
+const CALLING_CODE_TO_ISO = {
+  "+1":   "US",  // shared with Canada; default to US — override with composite if it matters
+  "+27":  "ZA",
+  "+33":  "FR",
+  "+34":  "ES",
+  "+39":  "IT",
+  "+44":  "GB",
+  "+49":  "DE",
+  "+52":  "MX",
+  "+55":  "BR",
+  "+61":  "AU",
+  "+64":  "NZ",
+  "+65":  "SG",
+  "+81":  "JP",
+  "+82":  "KR",
+  "+86":  "CN",
+  "+91":  "IN",
+  "+971": "AE",
+  "+972": "IL",
+};
+
+// Parse an E.164 string like "+61412345678" into { callingCode, iso, number }.
+// Returns null if it can't be confidently parsed.
+function parseE164(str) {
+  const trimmed = String(str).trim();
+  const m = trimmed.match(/^\+(\d{1,3})(\d+)$/);
+  if (!m) return null;
+  const digits = m[1];
+  const rest = m[2];
+  // Try longest calling code first (some are 3 digits like +971).
+  for (let len = Math.min(3, digits.length); len >= 1; len--) {
+    const callingCode = "+" + digits.slice(0, len);
+    const iso = CALLING_CODE_TO_ISO[callingCode];
+    if (iso) {
+      const extraDigits = digits.slice(len);
+      return { callingCode, iso, number: extraDigits + rest };
+    }
+  }
+  return null;
+}
+
+// Normalize whatever shape Hermes (or a human) passed into the composite Twenty wants:
+//   "+61412345678"
+//   { primaryPhoneNumber: "412345678", primaryPhoneCountryCode: "AU", primaryPhoneCallingCode: "+61" }
+//   { phones: { ...above... } }
+// Returns a value safe to write to data.phones, or undefined if input is empty.
+function normalizePhone(input, fallbackCountryCode) {
+  if (input == null || input === "") return undefined;
+  if (typeof input === "object") {
+    // Allow caller to wrap in { phones: { ... } } or pass the inner object directly.
+    const inner = input.phones || input;
+    if (inner.primaryPhoneNumber) {
+      return {
+        primaryPhoneNumber: String(inner.primaryPhoneNumber),
+        primaryPhoneCountryCode: inner.primaryPhoneCountryCode || fallbackCountryCode || "",
+        primaryPhoneCallingCode: inner.primaryPhoneCallingCode || "",
+        additionalPhones: Array.isArray(inner.additionalPhones) ? inner.additionalPhones : [],
+      };
+    }
+    return undefined;
+  }
+  const parsed = parseE164(input);
+  if (parsed) {
+    return {
+      primaryPhoneNumber: parsed.number,
+      primaryPhoneCountryCode: parsed.iso,
+      primaryPhoneCallingCode: parsed.callingCode,
+      additionalPhones: [],
+    };
+  }
+  // Fallback: caller passed a non-E.164 string (e.g. "0412 345 678"). Store digits-only,
+  // use the configured default ISO country code, no calling code.
+  const digitsOnly = String(input).replace(/\D/g, "");
+  if (!digitsOnly) return undefined;
+  return {
+    primaryPhoneNumber: digitsOnly,
+    primaryPhoneCountryCode: fallbackCountryCode || "",
+    primaryPhoneCallingCode: "",
+    additionalPhones: [],
+  };
+}
+
 class TwentyCRMServer {
   constructor() {
     this.server = new Server(
       {
         name: "twenty-crm",
-        version: "0.1.0",
+        version: "0.2.0",
       },
       {
         capabilities: {
@@ -23,7 +109,10 @@ class TwentyCRMServer {
 
     this.apiKey = process.env.TWENTY_API_KEY;
     this.baseUrl = process.env.TWENTY_BASE_URL || "https://api.twenty.com";
-    
+    // Fallback for non-E.164 phone strings that don't carry a country code.
+    // Set TWENTY_DEFAULT_COUNTRY_CODE to a 2-letter ISO code (e.g. "AU") in your env.
+    this.defaultCountryCode = process.env.TWENTY_DEFAULT_COUNTRY_CODE || "";
+
     if (!this.apiKey) {
       throw new Error("TWENTY_API_KEY environment variable is required");
     }
@@ -67,14 +156,14 @@ class TwentyCRMServer {
           // People Management
           {
             name: "create_person",
-            description: "Create a new person in Twenty CRM",
+            description: "Create a new person in Twenty CRM. Phone is auto-normalized to Twenty's PHONES composite: pass either an E.164 string (e.g. \"+61412345678\") or the composite object {primaryPhoneNumber, primaryPhoneCountryCode, primaryPhoneCallingCode}.",
             inputSchema: {
               type: "object",
               properties: {
                 firstName: { type: "string", description: "First name" },
                 lastName: { type: "string", description: "Last name" },
                 email: { type: "string", description: "Email address" },
-                phone: { type: "string", description: "Phone number" },
+                phone: { type: ["string", "object"], description: "Phone — either E.164 string like '+61412345678' or composite {primaryPhoneNumber, primaryPhoneCountryCode (ISO alpha-2 like 'AU'), primaryPhoneCallingCode}. Auto-normalized." },
                 jobTitle: { type: "string", description: "Job title" },
                 companyId: { type: "string", description: "Company ID to associate with" },
                 linkedinUrl: { type: "string", description: "LinkedIn profile URL" },
@@ -97,7 +186,7 @@ class TwentyCRMServer {
           },
           {
             name: "update_person",
-            description: "Update an existing person's information",
+            description: "Update an existing person's information. Phone follows the same auto-normalization as create_person.",
             inputSchema: {
               type: "object",
               properties: {
@@ -105,7 +194,7 @@ class TwentyCRMServer {
                 firstName: { type: "string", description: "First name" },
                 lastName: { type: "string", description: "Last name" },
                 email: { type: "string", description: "Email address" },
-                phone: { type: "string", description: "Phone number" },
+                phone: { type: ["string", "object"], description: "Phone — E.164 string or composite. See create_person for details." },
                 jobTitle: { type: "string", description: "Job title" },
                 companyId: { type: "string", description: "Company ID" },
                 linkedinUrl: { type: "string", description: "LinkedIn profile URL" },
@@ -270,6 +359,18 @@ class TwentyCRMServer {
                 id: { type: "string", description: "Note ID to delete" }
               },
               required: ["id"]
+            }
+          },
+          {
+            name: "create_note_target",
+            description: "Link an existing Note to a Person via Twenty's NoteTarget join object. Twenty requires this two-step pattern — create_note first, then create_note_target to attach it to a contact. Tries `personId` field first, falls back to `targetPersonId` if the Twenty version expects that name.",
+            inputSchema: {
+              type: "object",
+              properties: {
+                noteId: { type: "string", description: "Note ID returned by create_note" },
+                personId: { type: "string", description: "Person ID to attach the note to" }
+              },
+              required: ["noteId", "personId"]
             }
           },
 
@@ -524,6 +625,8 @@ class TwentyCRMServer {
             return await this.updateNote(args);
           case "delete_note":
             return await this.deleteNote(args.id);
+          case "create_note_target":
+            return await this.createNoteTarget(args);
 
           // Task operations
           case "create_task":
@@ -578,8 +681,21 @@ class TwentyCRMServer {
   }
 
   // People methods
+  // Translate the flat tool params to Twenty's actual REST shape:
+  //   - `phone` (string or composite) → `phones` (composite object)
+  //   - `companyId` → `companyId` (kept as-is; REST accepts this for linking)
+  _personPayload(data) {
+    const { phone, ...rest } = data;
+    const payload = { ...rest };
+    const normalized = normalizePhone(phone, this.defaultCountryCode);
+    if (normalized !== undefined) {
+      payload.phones = normalized;
+    }
+    return payload;
+  }
+
   async createPerson(data) {
-    const result = await this.makeRequest("/rest/people", "POST", data);
+    const result = await this.makeRequest("/rest/people", "POST", this._personPayload(data));
     return {
       content: [
         {
@@ -604,7 +720,8 @@ class TwentyCRMServer {
 
   async updatePerson(data) {
     const { id, ...updateData } = data;
-    const result = await this.makeRequest(`/rest/people/${id}`, "PUT", updateData);
+    const payload = this._personPayload(updateData);
+    const result = await this.makeRequest(`/rest/people/${id}`, "PUT", payload);
     return {
       content: [
         {
@@ -719,8 +836,20 @@ class TwentyCRMServer {
   }
 
   // Note methods
+  // Translate the tool's flat `body` string into Twenty's actual `bodyV2: { markdown }`
+  // shape. Empirically, current Twenty rejects the legacy `body` field outright with
+  // "Object note doesn't have any 'body' field." — so we send bodyV2 only.
+  _notePayload(data) {
+    const { body, ...rest } = data;
+    const payload = { ...rest };
+    if (body !== undefined && body !== null) {
+      payload.bodyV2 = { markdown: String(body) };
+    }
+    return payload;
+  }
+
   async createNote(data) {
-    const result = await this.makeRequest("/rest/notes", "POST", data);
+    const result = await this.makeRequest("/rest/notes", "POST", this._notePayload(data));
     return {
       content: [
         {
@@ -764,7 +893,7 @@ class TwentyCRMServer {
 
   async updateNote(data) {
     const { id, ...updateData } = data;
-    const result = await this.makeRequest(`/rest/notes/${id}`, "PUT", updateData);
+    const result = await this.makeRequest(`/rest/notes/${id}`, "PUT", this._notePayload(updateData));
     return {
       content: [
         {
@@ -773,6 +902,30 @@ class TwentyCRMServer {
         }
       ]
     };
+  }
+
+  async createNoteTarget(data) {
+    const { noteId, personId } = data;
+    // Twenty's NoteTarget join object can use either `personId` or `targetPersonId`
+    // depending on version. Try the natural name first, fall back on field error.
+    try {
+      const result = await this.makeRequest("/rest/noteTargets", "POST", { noteId, personId });
+      return {
+        content: [
+          { type: "text", text: `Linked Note ${noteId} to Person ${personId}: ${JSON.stringify(result, null, 2)}` }
+        ]
+      };
+    } catch (e) {
+      if (/Field|column|not defined|not exist|unknown|invalid/i.test(e.message)) {
+        const result = await this.makeRequest("/rest/noteTargets", "POST", { noteId, targetPersonId: personId });
+        return {
+          content: [
+            { type: "text", text: `Linked Note ${noteId} to Person ${personId} (via targetPersonId): ${JSON.stringify(result, null, 2)}` }
+          ]
+        };
+      }
+      throw e;
+    }
   }
 
   async deleteNote(id) {
