@@ -2,10 +2,12 @@
 
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
+import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import {
   CallToolRequestSchema,
   ListToolsRequestSchema,
 } from "@modelcontextprotocol/sdk/types.js";
+import http from "node:http";
 
 // Twenty's PHONES composite field requires a calling code (+61) AND an ISO 3166-1
 // alpha-2 country code (AU). Passing the calling code as the country code is a
@@ -98,7 +100,7 @@ class TwentyCRMServer {
     this.server = new Server(
       {
         name: "twenty-crm",
-        version: "0.2.0",
+        version: "0.3.0",
       },
       {
         capabilities: {
@@ -1135,9 +1137,83 @@ class TwentyCRMServer {
   }
 
   async run() {
-    const transport = new StdioServerTransport();
-    await this.server.connect(transport);
-    console.error("Twenty CRM MCP server running on stdio");
+    const mode = (process.env.MCP_TRANSPORT || "stdio").toLowerCase();
+    if (mode === "http" || mode === "streamablehttp") {
+      await this.runHttp();
+    } else {
+      const transport = new StdioServerTransport();
+      await this.server.connect(transport);
+      console.error("Twenty CRM MCP server running on stdio");
+    }
+  }
+
+  // Streamable HTTP transport. Stateless: every POST gets a fresh transport +
+  // a fresh TwentyCRMServer instance so concurrent requests don't collide on
+  // JSON-RPC IDs or share state. The MCP `Server` can only be connected once,
+  // hence per-request instantiation — see the SDK README "Stateless mode".
+  async runHttp() {
+    const port = parseInt(process.env.MCP_HTTP_PORT || "8000", 10);
+    const path = process.env.MCP_HTTP_PATH || "/mcp";
+    const bearerToken = process.env.MCP_BEARER_TOKEN || "";
+    if (!bearerToken) {
+      console.error("WARNING: MCP_BEARER_TOKEN unset — HTTP endpoint is unauthenticated.");
+    }
+
+    const httpServer = http.createServer(async (req, res) => {
+      const url = new URL(req.url, `http://${req.headers.host || "localhost"}`);
+
+      if (req.method === "GET" && url.pathname === "/healthz") {
+        res.writeHead(200, { "Content-Type": "text/plain" });
+        res.end("ok");
+        return;
+      }
+
+      if (url.pathname !== path) {
+        res.writeHead(404, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: "not_found" }));
+        return;
+      }
+
+      if (bearerToken && req.headers.authorization !== `Bearer ${bearerToken}`) {
+        res.writeHead(401, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: "unauthorized" }));
+        return;
+      }
+
+      let body;
+      if (req.method === "POST") {
+        try {
+          const raw = await new Promise((resolve, reject) => {
+            const chunks = [];
+            req.on("data", (c) => chunks.push(c));
+            req.on("end", () => resolve(Buffer.concat(chunks).toString("utf8")));
+            req.on("error", reject);
+          });
+          body = raw ? JSON.parse(raw) : undefined;
+        } catch {
+          res.writeHead(400, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ error: "invalid_json" }));
+          return;
+        }
+      }
+
+      const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
+      const perRequestServer = new TwentyCRMServer();
+      res.on("close", () => { transport.close(); });
+      try {
+        await perRequestServer.server.connect(transport);
+        await transport.handleRequest(req, res, body);
+      } catch (err) {
+        console.error("HTTP transport error:", err);
+        if (!res.headersSent) {
+          res.writeHead(500, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ error: "internal_error", message: err.message }));
+        }
+      }
+    });
+
+    await new Promise((resolve) => httpServer.listen(port, "0.0.0.0", resolve));
+    console.error(`Twenty CRM MCP server running on http://0.0.0.0:${port}${path}`);
   }
 }
 
