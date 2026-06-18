@@ -21,10 +21,10 @@
 
 This is a fork of [`mhenry3164/twenty-crm-mcp-server`](https://github.com/mhenry3164/twenty-crm-mcp-server) (MIT) maintained for the OCP Phone2CRM project. It adds support for a custom `PhoneCall` object via these new MCP tools:
 
-- `create_phone_call` — create a PhoneCall record (transcript, recording URL, `twilioCallSid`, etc.)
+- `create_phone_call` — **upsert** a PhoneCall record (transcript, recording URL, `twilioCallSid`, etc.). Dedup-safe (v0.4.0+): matches an existing record by `twilioCallSid`, else by `fromNumber` within a recency window (`PHONECALL_DEDUP_WINDOW_MIN`, default 10; set `0` to disable the number match), and updates it instead of creating a duplicate — so independent writers (the Phone2CRM pipeline and the Retell receptionist) logging the same call merge into one record. Also normalizes `direction`/`outcome` to the uppercase values Twenty expects.
 - `get_phone_call` — fetch by ID
 - `list_phone_calls` — list with optional filter (e.g. by `personId` or `twilioCallSid`)
-- `find_phone_call_by_call_sid` — convenience lookup used by Hermes to dedupe on retry
+- `find_phone_call_by_call_sid` — convenience lookup (no longer needed as a pre-create guard since `create_phone_call` dedups itself)
 - `update_phone_call` — backfill fields / link a Person after reconciliation
 - `delete_phone_call` — for completeness
 

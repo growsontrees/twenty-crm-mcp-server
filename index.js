@@ -100,7 +100,7 @@ class TwentyCRMServer {
     this.server = new Server(
       {
         name: "twenty-crm",
-        version: "0.3.0",
+        version: "0.4.0",
       },
       {
         capabilities: {
@@ -488,7 +488,7 @@ class TwentyCRMServer {
           // PhoneCall Management (OCP fork — custom object)
           {
             name: "create_phone_call",
-            description: "Create a PhoneCall record (custom object) in Twenty CRM. Used to log an inbound call with its transcript. ALWAYS populate twilioCallSid — it is the correlation key the upstream pipeline uses to verify the write succeeded.",
+            description: "Upsert a PhoneCall record (custom object) in Twenty CRM to log an inbound call with its transcript. This is dedup-safe: it first looks for an existing PhoneCall with the same twilioCallSid, then for one from the same fromNumber within the last few minutes (PHONECALL_DEDUP_WINDOW_MIN, default 10) — if found it UPDATES that record (never downgrades outcome, appends a differing transcript) instead of creating a duplicate. So separate writers (this pipeline + the Retell receptionist) logging the same call merge into one record. ALWAYS populate twilioCallSid and, when known, fromNumber — they are the correlation keys. You do NOT need to call find_phone_call_by_call_sid first; this tool handles dedup.",
             inputSchema: {
               type: "object",
               properties: {
@@ -538,7 +538,7 @@ class TwentyCRMServer {
           },
           {
             name: "find_phone_call_by_call_sid",
-            description: "Find an existing PhoneCall by twilioCallSid. Returns the record or a 'not found' message. Call this BEFORE create_phone_call when processing a retry, to avoid creating a duplicate record.",
+            description: "Find an existing PhoneCall by twilioCallSid. Returns the record or a 'not found' message. Note: create_phone_call now dedups on its own, so this is only needed for explicit lookups, not as a pre-create guard.",
             inputSchema: {
               type: "object",
               properties: { twilioCallSid: { type: "string", description: "Twilio Call SID to search for" } },
@@ -1064,8 +1064,93 @@ class TwentyCRMServer {
   }
 
   // PhoneCall methods (OCP fork — custom object)
+
+  // Twenty SELECT fields expect UPPERCASE values; the tool schema uses lowercase
+  // (e.g. "inbound", "voicemail"). Normalize so callers can pass either.
+  _phoneCallPayload(data) {
+    const out = { ...data };
+    if (typeof out.direction === "string") out.direction = out.direction.toUpperCase();
+    if (typeof out.outcome === "string") out.outcome = out.outcome.toUpperCase();
+    return out;
+  }
+
+  // Twenty REST returns the collection under data.<objectPlural>; tolerate other shapes.
+  _extractPhoneCalls(result) {
+    return (
+      result?.data?.phoneCalls ??
+      result?.phoneCalls ??
+      (Array.isArray(result?.data) ? result.data : null) ??
+      []
+    );
+  }
+
+  async _findRecordByCallSid(twilioCallSid) {
+    if (!twilioCallSid) return null;
+    const endpoint = `/rest/phoneCalls?filter=${encodeURIComponent(`twilioCallSid[eq]:${twilioCallSid}`)}&limit=1`;
+    return this._extractPhoneCalls(await this.makeRequest(endpoint))[0] || null;
+  }
+
+  // Most recent PhoneCall from the same caller created within `windowMin` minutes.
+  // Used to merge records when two paths (Phone2CRM pipeline vs Retell) log the same
+  // call under different twilioCallSids — they share the caller's fromNumber.
+  async _findRecentRecordByFromNumber(fromNumber, windowMin) {
+    if (!fromNumber || !(windowMin > 0)) return null;
+    const endpoint = `/rest/phoneCalls?filter=${encodeURIComponent(`fromNumber[eq]:${fromNumber}`)}&limit=20`;
+    const records = this._extractPhoneCalls(await this.makeRequest(endpoint));
+    const cutoff = Date.now() - windowMin * 60 * 1000;
+    const ts = (r) => Date.parse(r?.createdAt || r?.created_at || 0);
+    return records
+      .filter((r) => Number.isFinite(ts(r)) && ts(r) >= cutoff)
+      .sort((a, b) => ts(b) - ts(a))[0] || null;
+  }
+
+  // Build a non-destructive update: fill blanks, never downgrade outcome, append a
+  // genuinely different transcript rather than overwrite it.
+  _mergePhoneCallUpdate(existing, incoming) {
+    const RANK = { COMPLETED: 5, FALLBACK_RETELL: 4, VOICEMAIL: 3, MISSED: 2, FAILOVER_STATIC: 1 };
+    const update = {};
+    for (const [k, v] of Object.entries(incoming)) {
+      if (v === null || v === undefined || v === "") continue;
+      if (k === "twilioCallSid" || k === "outcome" || k === "transcript") continue;
+      update[k] = v;
+    }
+    const exOut = (existing.outcome || "").toUpperCase();
+    const inOut = (incoming.outcome || "").toUpperCase();
+    if (inOut) {
+      const best = (RANK[inOut] || 0) >= (RANK[exOut] || 0) ? inOut : exOut;
+      if (best && best !== exOut) update.outcome = best;
+    }
+    const exT = existing.transcript || "";
+    const inT = incoming.transcript || "";
+    if (inT && inT !== exT) update.transcript = exT ? `${exT}\n\n--- (merged) ---\n\n${inT}` : inT;
+    return update;
+  }
+
+  // Upsert: dedup on twilioCallSid first, then on fromNumber within a recency window
+  // (default 10 min, override with PHONECALL_DEDUP_WINDOW_MIN; set 0 to disable the
+  // number match). Every consumer of this tool — Phone2CRM, Retell, future automations —
+  // inherits the dedup, so the same call can't land in the CRM twice.
   async createPhoneCall(data) {
-    const result = await this.makeRequest("/rest/phoneCalls", "POST", data);
+    const windowMin = parseInt(process.env.PHONECALL_DEDUP_WINDOW_MIN || "10", 10);
+    const payload = this._phoneCallPayload(data);
+
+    let existing = await this._findRecordByCallSid(payload.twilioCallSid);
+    let matchedBy = existing ? "twilioCallSid" : null;
+    if (!existing && payload.fromNumber) {
+      existing = await this._findRecentRecordByFromNumber(payload.fromNumber, windowMin);
+      if (existing) matchedBy = `fromNumber within ${windowMin}m`;
+    }
+
+    if (existing) {
+      const update = this._mergePhoneCallUpdate(existing, payload);
+      if (Object.keys(update).length === 0) {
+        return { content: [{ type: "text", text: `PhoneCall already current (matched by ${matchedBy}, id=${existing.id}); no changes made.` }] };
+      }
+      const result = await this.makeRequest(`/rest/phoneCalls/${existing.id}`, "PUT", update);
+      return { content: [{ type: "text", text: `Upserted PhoneCall (matched by ${matchedBy} → updated id=${existing.id}): ${JSON.stringify(result, null, 2)}` }] };
+    }
+
+    const result = await this.makeRequest("/rest/phoneCalls", "POST", payload);
     return {
       content: [
         { type: "text", text: `Created PhoneCall: ${JSON.stringify(result, null, 2)}` }
@@ -1099,12 +1184,7 @@ class TwentyCRMServer {
   async findPhoneCallByCallSid(twilioCallSid) {
     const endpoint = `/rest/phoneCalls?filter=${encodeURIComponent(`twilioCallSid[eq]:${twilioCallSid}`)}&limit=1`;
     const result = await this.makeRequest(endpoint);
-    // Twenty REST returns the collection under data.<objectPlural>; tolerate other shapes too.
-    const records =
-      result?.data?.phoneCalls ??
-      result?.phoneCalls ??
-      (Array.isArray(result?.data) ? result.data : null) ??
-      [];
+    const records = this._extractPhoneCalls(result);
     return {
       content: [
         {
@@ -1118,7 +1198,8 @@ class TwentyCRMServer {
   }
 
   async updatePhoneCall(data) {
-    const { id, ...updateData } = data;
+    const { id, ...rest } = data;
+    const updateData = this._phoneCallPayload(rest);
     const result = await this.makeRequest(`/rest/phoneCalls/${id}`, "PUT", updateData);
     return {
       content: [
