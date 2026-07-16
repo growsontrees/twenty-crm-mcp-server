@@ -497,6 +497,114 @@ class TwentyCRMServer {
             }
           },
 
+          // Opportunity Management (OCP fork additions — land-lease vendor pipeline)
+          {
+            name: "create_opportunity",
+            description: "Create an Opportunity in the land-lease vendor pipeline. Stages: NEW_LEAD, APPRAISAL_BOOKED, APPRAISED, AGENCY_AGREEMENT, LISTED, UNDER_OFFER, SITE_APPROVAL, SOLD, LOST. Open one per prospective vendor (name it '<Person> — <village/suburb>') and link the Person via pointOfContactId. Check list_opportunities with personId first — one open Opportunity per vendor journey; advance the existing one instead of creating another.",
+            inputSchema: {
+              type: "object",
+              properties: {
+                name: { type: "string", description: "Opportunity name, e.g. 'Margaret Wilson — Lake Munmorah'" },
+                stage: { type: "string", description: "Pipeline stage (default NEW_LEAD)", enum: ["NEW_LEAD", "APPRAISAL_BOOKED", "APPRAISED", "AGENCY_AGREEMENT", "LISTED", "UNDER_OFFER", "SITE_APPROVAL", "SOLD", "LOST"] },
+                amountDollars: { type: "number", description: "Expected sale price in AUD dollars (converted to Twenty's micros internally)" },
+                closeDate: { type: "string", description: "Expected close date, ISO 8601" },
+                pointOfContactId: { type: "string", description: "Person UUID of the vendor" },
+                companyId: { type: "string", description: "Company UUID (the village), if known" }
+              },
+              required: ["name"]
+            }
+          },
+          {
+            name: "get_opportunity",
+            description: "Get an Opportunity by ID",
+            inputSchema: { type: "object", properties: { id: { type: "string", description: "Opportunity ID" } }, required: ["id"] }
+          },
+          {
+            name: "list_opportunities",
+            description: "List Opportunities. Pass personId to find a vendor's existing pipeline entry (use before create_opportunity), or stage to see everything at one stage.",
+            inputSchema: {
+              type: "object",
+              properties: {
+                personId: { type: "string", description: "Filter to opportunities whose point of contact is this Person" },
+                stage: { type: "string", description: "Filter by pipeline stage" },
+                limit: { type: "number", description: "Max results (default 20)" }
+              }
+            }
+          },
+          {
+            name: "update_opportunity",
+            description: "Update an Opportunity — most commonly advancing its stage as a vendor progresses (e.g. NEW_LEAD → APPRAISAL_BOOKED when a visit is booked). Never move a stage backwards.",
+            inputSchema: {
+              type: "object",
+              properties: {
+                id: { type: "string", description: "Opportunity ID" },
+                name: { type: "string" },
+                stage: { type: "string", description: "New pipeline stage", enum: ["NEW_LEAD", "APPRAISAL_BOOKED", "APPRAISED", "AGENCY_AGREEMENT", "LISTED", "UNDER_OFFER", "SITE_APPROVAL", "SOLD", "LOST"] },
+                amountDollars: { type: "number", description: "Expected sale price in AUD dollars" },
+                closeDate: { type: "string", description: "ISO 8601" },
+                pointOfContactId: { type: "string" },
+                companyId: { type: "string" }
+              },
+              required: ["id"]
+            }
+          },
+
+          // Property Management (OCP fork additions — custom object)
+          {
+            name: "create_property",
+            description: "Create a Property record — a relocatable home CCLV appraises, lists, or sells. Name is the display address, e.g. '11/2-10 Duffys Road, Terrigal (Terrigal Waters)'. Check list_properties first so the same home isn't recorded twice.",
+            inputSchema: {
+              type: "object",
+              properties: {
+                name: { type: "string", description: "Display address incl. village" },
+                villageName: { type: "string", description: "Community name, e.g. Terrigal Waters" },
+                siteNumber: { type: "string", description: "Site/lot within the village" },
+                status: { type: "string", description: "Lifecycle status", enum: ["APPRAISAL", "LISTED", "UNDER_OFFER", "SOLD", "WITHDRAWN"] },
+                priceGuide: { type: "string", description: "Free text, e.g. 'Offers over $395,000'" },
+                bedrooms: { type: "number" },
+                listingUrl: { type: "string" },
+                vendorId: { type: "string", description: "Person UUID of the owner/vendor" }
+              },
+              required: ["name"]
+            }
+          },
+          {
+            name: "get_property",
+            description: "Get a Property by ID",
+            inputSchema: { type: "object", properties: { id: { type: "string", description: "Property ID" } }, required: ["id"] }
+          },
+          {
+            name: "list_properties",
+            description: "List Properties, optionally filtered by villageName or status.",
+            inputSchema: {
+              type: "object",
+              properties: {
+                villageName: { type: "string", description: "Exact village name filter" },
+                status: { type: "string", description: "Filter by lifecycle status" },
+                limit: { type: "number", description: "Max results (default 20)" }
+              }
+            }
+          },
+          {
+            name: "update_property",
+            description: "Update a Property — status changes (LISTED → UNDER_OFFER → SOLD), price guide, vendor link.",
+            inputSchema: {
+              type: "object",
+              properties: {
+                id: { type: "string", description: "Property ID" },
+                name: { type: "string" },
+                villageName: { type: "string" },
+                siteNumber: { type: "string" },
+                status: { type: "string", enum: ["APPRAISAL", "LISTED", "UNDER_OFFER", "SOLD", "WITHDRAWN"] },
+                priceGuide: { type: "string" },
+                bedrooms: { type: "number" },
+                listingUrl: { type: "string" },
+                vendorId: { type: "string" }
+              },
+              required: ["id"]
+            }
+          },
+
           // PhoneCall Management (OCP fork — custom object)
           {
             name: "create_phone_call",
@@ -665,6 +773,26 @@ class TwentyCRMServer {
           // Search operations
           case "search_records":
             return await this.searchRecords(args);
+
+          // Opportunity operations (OCP fork — vendor pipeline)
+          case "create_opportunity":
+            return await this.createOpportunity(args);
+          case "get_opportunity":
+            return await this.getOpportunity(args.id);
+          case "list_opportunities":
+            return await this.listOpportunities(args);
+          case "update_opportunity":
+            return await this.updateOpportunity(args);
+
+          // Property operations (OCP fork — custom object)
+          case "create_property":
+            return await this.createProperty(args);
+          case "get_property":
+            return await this.getProperty(args.id);
+          case "list_properties":
+            return await this.listProperties(args);
+          case "update_property":
+            return await this.updateProperty(args);
 
           // PhoneCall operations (OCP fork — custom object)
           case "create_phone_call":
@@ -1108,6 +1236,101 @@ class TwentyCRMServer {
 
   // Twenty SELECT fields expect UPPERCASE values; the tool schema uses lowercase
   // (e.g. "inbound", "voicemail"). Normalize so callers can pass either.
+  // ---- Opportunity (OCP fork — land-lease vendor pipeline) -----------------
+
+  _opportunityPayload(data) {
+    const STAGES = ["NEW_LEAD", "APPRAISAL_BOOKED", "APPRAISED", "AGENCY_AGREEMENT", "LISTED", "UNDER_OFFER", "SITE_APPROVAL", "SOLD", "LOST"];
+    const p = {};
+    if (data.name !== undefined) p.name = data.name;
+    if (data.stage !== undefined && data.stage !== null && data.stage !== "") {
+      const s = String(data.stage).toUpperCase().replace(/[\s/-]+/g, "_");
+      if (!STAGES.includes(s)) throw new Error(`Invalid stage "${data.stage}". Allowed: ${STAGES.join(", ")}`);
+      p.stage = s;
+    }
+    if (data.amountDollars !== undefined && data.amountDollars !== null) {
+      p.amount = { amountMicros: Math.round(Number(data.amountDollars) * 1_000_000), currencyCode: "AUD" };
+    }
+    if (data.closeDate) p.closeDate = data.closeDate;
+    if (data.pointOfContactId) p.pointOfContactId = data.pointOfContactId;
+    if (data.companyId) p.companyId = data.companyId;
+    return p;
+  }
+
+  async createOpportunity(data) {
+    const payload = this._opportunityPayload(data);
+    if (!payload.stage) payload.stage = "NEW_LEAD";
+    const result = await this.makeRequest("/rest/opportunities", "POST", payload);
+    return { content: [{ type: "text", text: `Created Opportunity: ${JSON.stringify(result, null, 2)}` }] };
+  }
+
+  async getOpportunity(id) {
+    const result = await this.makeRequest(`/rest/opportunities/${id}`);
+    return { content: [{ type: "text", text: `Opportunity: ${JSON.stringify(result, null, 2)}` }] };
+  }
+
+  async listOpportunities(params = {}) {
+    const { limit = 20, personId, stage } = params;
+    let endpoint = `/rest/opportunities?limit=${limit}`;
+    if (personId) endpoint += `&filter=${encodeURIComponent(`pointOfContactId[eq]:${personId}`)}`;
+    else if (stage) endpoint += `&filter=${encodeURIComponent(`stage[eq]:${String(stage).toUpperCase()}`)}`;
+    const result = await this.makeRequest(endpoint);
+    return { content: [{ type: "text", text: `Opportunities: ${JSON.stringify(result, null, 2)}` }] };
+  }
+
+  async updateOpportunity(data) {
+    const { id, ...rest } = data;
+    const payload = this._opportunityPayload(rest);
+    if (Object.keys(payload).length === 0) throw new Error("update_opportunity: nothing to update");
+    const result = await this.makeRequest(`/rest/opportunities/${id}`, "PATCH", payload);
+    return { content: [{ type: "text", text: `Updated Opportunity ${id}: ${JSON.stringify(result, null, 2)}` }] };
+  }
+
+  // ---- Property (OCP fork — custom object) ---------------------------------
+
+  _propertyPayload(data) {
+    const STATUSES = ["APPRAISAL", "LISTED", "UNDER_OFFER", "SOLD", "WITHDRAWN"];
+    const p = {};
+    for (const k of ["name", "villageName", "siteNumber", "priceGuide", "listingUrl"]) {
+      if (data[k] !== undefined) p[k] = data[k];
+    }
+    if (data.bedrooms !== undefined && data.bedrooms !== null) p.bedrooms = Number(data.bedrooms);
+    if (data.status !== undefined && data.status !== null && data.status !== "") {
+      const s = String(data.status).toUpperCase().replace(/[\s/-]+/g, "_");
+      if (!STATUSES.includes(s)) throw new Error(`Invalid status "${data.status}". Allowed: ${STATUSES.join(", ")}`);
+      p.status = s;
+    }
+    if (data.vendorId) p.vendorId = data.vendorId;
+    return p;
+  }
+
+  async createProperty(data) {
+    const payload = this._propertyPayload(data);
+    const result = await this.makeRequest("/rest/properties", "POST", payload);
+    return { content: [{ type: "text", text: `Created Property: ${JSON.stringify(result, null, 2)}` }] };
+  }
+
+  async getProperty(id) {
+    const result = await this.makeRequest(`/rest/properties/${id}`);
+    return { content: [{ type: "text", text: `Property: ${JSON.stringify(result, null, 2)}` }] };
+  }
+
+  async listProperties(params = {}) {
+    const { limit = 20, villageName, status } = params;
+    let endpoint = `/rest/properties?limit=${limit}`;
+    if (villageName) endpoint += `&filter=${encodeURIComponent(`villageName[eq]:${villageName}`)}`;
+    else if (status) endpoint += `&filter=${encodeURIComponent(`status[eq]:${String(status).toUpperCase()}`)}`;
+    const result = await this.makeRequest(endpoint);
+    return { content: [{ type: "text", text: `Properties: ${JSON.stringify(result, null, 2)}` }] };
+  }
+
+  async updateProperty(data) {
+    const { id, ...rest } = data;
+    const payload = this._propertyPayload(rest);
+    if (Object.keys(payload).length === 0) throw new Error("update_property: nothing to update");
+    const result = await this.makeRequest(`/rest/properties/${id}`, "PATCH", payload);
+    return { content: [{ type: "text", text: `Updated Property ${id}: ${JSON.stringify(result, null, 2)}` }] };
+  }
+
   _phoneCallPayload(data) {
     const out = { ...data };
     if (typeof out.direction === "string") out.direction = out.direction.toUpperCase();
