@@ -434,6 +434,18 @@ class TwentyCRMServer {
             }
           },
           {
+            name: "create_task_target",
+            description: "Link an existing Task to a Person via Twenty's TaskTarget join object. Same two-step pattern as Notes — create_task first (set dueAt for scheduled commitments like appraisal visits or callbacks), then create_task_target to attach it to the contact. Tries `personId` first, falls back to `targetPersonId`.",
+            inputSchema: {
+              type: "object",
+              properties: {
+                taskId: { type: "string", description: "ID of the Task created with create_task" },
+                personId: { type: "string", description: "ID of the Person to link the task to" }
+              },
+              required: ["taskId", "personId"]
+            }
+          },
+          {
             name: "delete_task",
             description: "Delete a task from Twenty CRM",
             inputSchema: {
@@ -641,6 +653,8 @@ class TwentyCRMServer {
             return await this.updateTask(args);
           case "delete_task":
             return await this.deleteTask(args.id);
+          case "create_task_target":
+            return await this.createTaskTarget(args);
 
           // Metadata operations
           case "get_metadata_objects":
@@ -1012,6 +1026,30 @@ class TwentyCRMServer {
         }
       ]
     };
+  }
+
+  async createTaskTarget(data) {
+    const { taskId, personId } = data;
+    // Same two-step join pattern as NoteTarget: try `personId`, fall back to
+    // `targetPersonId` for Twenty versions that expect that field name.
+    try {
+      const result = await this.makeRequest("/rest/taskTargets", "POST", { taskId, personId });
+      return {
+        content: [
+          { type: "text", text: `Linked Task ${taskId} to Person ${personId}: ${JSON.stringify(result, null, 2)}` }
+        ]
+      };
+    } catch (e) {
+      if (/Field|column|not defined|not exist|unknown|invalid/i.test(e.message)) {
+        const result = await this.makeRequest("/rest/taskTargets", "POST", { taskId, targetPersonId: personId });
+        return {
+          content: [
+            { type: "text", text: `Linked Task ${taskId} to Person ${personId} (via targetPersonId): ${JSON.stringify(result, null, 2)}` }
+          ]
+        };
+      }
+      throw e;
+    }
   }
 
   // Metadata methods
