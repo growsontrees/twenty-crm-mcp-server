@@ -1111,7 +1111,11 @@ class TwentyCRMServer {
     const update = {};
     for (const [k, v] of Object.entries(incoming)) {
       if (v === null || v === undefined || v === "") continue;
-      if (k === "twilioCallSid" || k === "outcome" || k === "transcript") continue;
+      // Backfill the sid when the existing record lacks one (Retell wrote first);
+      // never replace a different existing sid — the upsert guard prevents that
+      // pairing from matching at all.
+      if (k === "twilioCallSid") { if (!existing.twilioCallSid) update.twilioCallSid = v; continue; }
+      if (k === "outcome" || k === "transcript") continue;
       update[k] = v;
     }
     const exOut = (existing.outcome || "").toUpperCase();
@@ -1137,8 +1141,16 @@ class TwentyCRMServer {
     let existing = await this._findRecordByCallSid(payload.twilioCallSid);
     let matchedBy = existing ? "twilioCallSid" : null;
     if (!existing && payload.fromNumber) {
-      existing = await this._findRecentRecordByFromNumber(payload.fromNumber, windowMin);
-      if (existing) matchedBy = `fromNumber within ${windowMin}m`;
+      const candidate = await this._findRecentRecordByFromNumber(payload.fromNumber, windowMin);
+      // Merge-by-number exists for the SAME call logged by two writers (Phone2CRM
+      // vs Retell), where at most one side knows the twilioCallSid. When BOTH
+      // sides carry a sid and they differ, they are two DIFFERENT calls from the
+      // same caller (e.g. rings back within the window) — never merge those.
+      // Live-verified 2026-07-16: three test calls in 5 min merged into one record.
+      if (candidate && !(payload.twilioCallSid && candidate.twilioCallSid && candidate.twilioCallSid !== payload.twilioCallSid)) {
+        existing = candidate;
+        matchedBy = `fromNumber within ${windowMin}m`;
+      }
     }
 
     if (existing) {
