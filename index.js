@@ -170,7 +170,8 @@ class TwentyCRMServer {
                 companyId: { type: "string", description: "Company ID to associate with" },
                 linkedinUrl: { type: "string", description: "LinkedIn profile URL" },
                 city: { type: "string", description: "City" },
-                avatarUrl: { type: "string", description: "Avatar image URL" }
+                avatarUrl: { type: "string", description: "Avatar image URL" },
+                buyerRequirements: { type: "string", description: "What this contact is looking for — one short line: beds, budget, preferred suburbs/villages, over-50s eligibility. Merge with any existing value rather than discarding it." }
               },
               required: ["firstName", "lastName"]
             }
@@ -200,7 +201,8 @@ class TwentyCRMServer {
                 jobTitle: { type: "string", description: "Job title" },
                 companyId: { type: "string", description: "Company ID" },
                 linkedinUrl: { type: "string", description: "LinkedIn profile URL" },
-                city: { type: "string", description: "City" }
+                city: { type: "string", description: "City" },
+                buyerRequirements: { type: "string", description: "What this contact is looking for — one short line: beds, budget, preferred suburbs/villages, over-50s eligibility. Merge with any existing value rather than discarding it." }
               },
               required: ["id"]
             }
