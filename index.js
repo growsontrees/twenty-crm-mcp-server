@@ -922,10 +922,13 @@ class TwentyCRMServer {
 
   async createNoteTarget(data) {
     const { noteId, personId } = data;
-    // Twenty's NoteTarget join object can use either `personId` or `targetPersonId`
-    // depending on version. Try the natural name first, fall back on field error.
+    // Twenty's join field is `targetPersonId` (schema-verified 2026-07-16). Send it
+    // FIRST: POST silently DROPS unknown fields on current Twenty versions, so a
+    // wrong-field-first attempt "succeeds" with a null link and the error-based
+    // fallback never fires (that bug shipped orphaned noteTargets in v0.4.0-0.4.2).
+    // The `personId` fallback remains for older versions that reject targetPersonId.
     try {
-      const result = await this.makeRequest("/rest/noteTargets", "POST", { noteId, personId });
+      const result = await this.makeRequest("/rest/noteTargets", "POST", { noteId, targetPersonId: personId });
       return {
         content: [
           { type: "text", text: `Linked Note ${noteId} to Person ${personId}: ${JSON.stringify(result, null, 2)}` }
@@ -933,10 +936,10 @@ class TwentyCRMServer {
       };
     } catch (e) {
       if (/Field|column|not defined|not exist|unknown|invalid/i.test(e.message)) {
-        const result = await this.makeRequest("/rest/noteTargets", "POST", { noteId, targetPersonId: personId });
+        const result = await this.makeRequest("/rest/noteTargets", "POST", { noteId, personId });
         return {
           content: [
-            { type: "text", text: `Linked Note ${noteId} to Person ${personId} (via targetPersonId): ${JSON.stringify(result, null, 2)}` }
+            { type: "text", text: `Linked Note ${noteId} to Person ${personId} (via legacy personId): ${JSON.stringify(result, null, 2)}` }
           ]
         };
       }
@@ -1030,10 +1033,10 @@ class TwentyCRMServer {
 
   async createTaskTarget(data) {
     const { taskId, personId } = data;
-    // Same two-step join pattern as NoteTarget: try `personId`, fall back to
-    // `targetPersonId` for Twenty versions that expect that field name.
+    // Same join pattern as NoteTarget: `targetPersonId` is canonical and must go
+    // FIRST (POST silently drops unknown fields — see createNoteTarget).
     try {
-      const result = await this.makeRequest("/rest/taskTargets", "POST", { taskId, personId });
+      const result = await this.makeRequest("/rest/taskTargets", "POST", { taskId, targetPersonId: personId });
       return {
         content: [
           { type: "text", text: `Linked Task ${taskId} to Person ${personId}: ${JSON.stringify(result, null, 2)}` }
@@ -1041,10 +1044,10 @@ class TwentyCRMServer {
       };
     } catch (e) {
       if (/Field|column|not defined|not exist|unknown|invalid/i.test(e.message)) {
-        const result = await this.makeRequest("/rest/taskTargets", "POST", { taskId, targetPersonId: personId });
+        const result = await this.makeRequest("/rest/taskTargets", "POST", { taskId, personId });
         return {
           content: [
-            { type: "text", text: `Linked Task ${taskId} to Person ${personId} (via targetPersonId): ${JSON.stringify(result, null, 2)}` }
+            { type: "text", text: `Linked Task ${taskId} to Person ${personId} (via legacy personId): ${JSON.stringify(result, null, 2)}` }
           ]
         };
       }
