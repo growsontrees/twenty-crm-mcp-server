@@ -9,6 +9,25 @@ import {
 } from "@modelcontextprotocol/sdk/types.js";
 import http from "node:http";
 
+// Seller (vendor) pipeline stages, in board order, with the labels Ben and Chris use (CCLV, agreed 11 Oct 2026).
+// The values must match the Twenty opportunity.stage options. Park approval and disclosure are buyer-deal fields,
+// not seller stages, so SITE_APPROVAL was retired in v0.6.0.
+const OPPORTUNITY_STAGES = [
+  ["NEW_LEAD", "Enquiry"],
+  ["APPRAISAL_BOOKED", "Appraisal"],
+  ["APPRAISED", "Vendor considering"],
+  ["AGENCY_AGREEMENT", "Agency signed"],
+  ["MARKETING_PREP", "Marketing prep and park notified"],
+  ["LISTED", "Advertised"],
+  ["UNDER_OFFER", "Offer accepted"],
+  ["EXCHANGED", "Contract signed / exchanged"],
+  ["SETTLEMENT_SCHEDULED", "Settlement scheduled"],
+  ["SOLD", "Settled"],
+  ["LOST", "Lost"],
+];
+const STAGE_VALUES = OPPORTUNITY_STAGES.map(([value]) => value);
+const STAGE_GUIDE = OPPORTUNITY_STAGES.map(([value, label]) => `${value} (${label})`).join(", ");
+
 // Twenty's PHONES composite field requires a calling code (+61) AND an ISO 3166-1
 // alpha-2 country code (AU). Passing the calling code as the country code is a
 // classic INVALID_PHONE_COUNTRY_CODE error. This table covers the codes most
@@ -502,12 +521,12 @@ class TwentyCRMServer {
           // Opportunity Management (OCP fork additions — land-lease vendor pipeline)
           {
             name: "create_opportunity",
-            description: "Create an Opportunity in the land-lease vendor pipeline. Stages: NEW_LEAD, APPRAISAL_BOOKED, APPRAISED, AGENCY_AGREEMENT, LISTED, UNDER_OFFER, SITE_APPROVAL, SOLD, LOST. Open one per prospective vendor (name it '<Person> — <village/suburb>') and link the Person via pointOfContactId. Check list_opportunities with personId first — one open Opportunity per vendor journey; advance the existing one instead of creating another.",
+            description: "Create an Opportunity in the land-lease vendor pipeline. Stages, in order: " + STAGE_GUIDE + ". Open one per prospective vendor (name it '<Person> — <village/suburb>') and link the Person via pointOfContactId. Check list_opportunities with personId first — one open Opportunity per vendor journey; advance the existing one instead of creating another.",
             inputSchema: {
               type: "object",
               properties: {
                 name: { type: "string", description: "Opportunity name, e.g. 'Margaret Wilson — Lake Munmorah'" },
-                stage: { type: "string", description: "Pipeline stage (default NEW_LEAD)", enum: ["NEW_LEAD", "APPRAISAL_BOOKED", "APPRAISED", "AGENCY_AGREEMENT", "LISTED", "UNDER_OFFER", "SITE_APPROVAL", "SOLD", "LOST"] },
+                stage: { type: "string", description: "Pipeline stage (default NEW_LEAD)", enum: STAGE_VALUES },
                 amountDollars: { type: "number", description: "Expected sale price in AUD dollars (converted to Twenty's micros internally)" },
                 closeDate: { type: "string", description: "Expected close date, ISO 8601" },
                 pointOfContactId: { type: "string", description: "Person UUID of the vendor" },
@@ -541,7 +560,7 @@ class TwentyCRMServer {
               properties: {
                 id: { type: "string", description: "Opportunity ID" },
                 name: { type: "string" },
-                stage: { type: "string", description: "New pipeline stage", enum: ["NEW_LEAD", "APPRAISAL_BOOKED", "APPRAISED", "AGENCY_AGREEMENT", "LISTED", "UNDER_OFFER", "SITE_APPROVAL", "SOLD", "LOST"] },
+                stage: { type: "string", description: "New pipeline stage", enum: STAGE_VALUES },
                 amountDollars: { type: "number", description: "Expected sale price in AUD dollars" },
                 closeDate: { type: "string", description: "ISO 8601" },
                 pointOfContactId: { type: "string" },
@@ -1241,7 +1260,7 @@ class TwentyCRMServer {
   // ---- Opportunity (OCP fork — land-lease vendor pipeline) -----------------
 
   _opportunityPayload(data) {
-    const STAGES = ["NEW_LEAD", "APPRAISAL_BOOKED", "APPRAISED", "AGENCY_AGREEMENT", "LISTED", "UNDER_OFFER", "SITE_APPROVAL", "SOLD", "LOST"];
+    const STAGES = STAGE_VALUES;
     const p = {};
     if (data.name !== undefined) p.name = data.name;
     if (data.stage !== undefined && data.stage !== null && data.stage !== "") {
