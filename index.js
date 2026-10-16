@@ -133,6 +133,9 @@ class TwentyCRMServer {
     // Fallback for non-E.164 phone strings that don't carry a country code.
     // Set TWENTY_DEFAULT_COUNTRY_CODE to a 2-letter ISO code (e.g. "AU") in your env.
     this.defaultCountryCode = process.env.TWENTY_DEFAULT_COUNTRY_CODE || "";
+    // Workspace member id that new tasks are assigned to when the caller gives no assigneeId.
+    // Without an assignee a task never shows in a member's "Assigned to me" / Today views.
+    this.defaultTaskAssigneeId = process.env.TWENTY_DEFAULT_TASK_ASSIGNEE_ID || "";
 
     if (!this.apiKey) {
       throw new Error("TWENTY_API_KEY environment variable is required");
@@ -408,7 +411,7 @@ class TwentyCRMServer {
                 body: { type: "string", description: "Task description" },
                 dueAt: { type: "string", description: "Due date (ISO 8601 format)" },
                 status: { type: "string", description: "Task status", enum: ["TODO", "IN_PROGRESS", "DONE"] },
-                assigneeId: { type: "string", description: "ID of person assigned to task" },
+                assigneeId: { type: "string", description: "Workspace member ID the task is assigned to. If omitted, the server's default assignee (TWENTY_DEFAULT_TASK_ASSIGNEE_ID) is used." },
                 position: { type: "number", description: "Position for ordering" }
               },
               required: ["title"]
@@ -1110,6 +1113,9 @@ class TwentyCRMServer {
 
   // Task methods
   async createTask(data) {
+    if (!data.assigneeId && this.defaultTaskAssigneeId) {
+      data = { ...data, assigneeId: this.defaultTaskAssigneeId };
+    }
     const result = await this.makeRequest("/rest/tasks", "POST", data);
     return {
       content: [
